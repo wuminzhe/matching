@@ -1,6 +1,6 @@
 module Matching
   class Engine
-
+    DEFAULT_PRECISION = 8
     attr_accessor :order_book_manager
 
     def ask_order_book
@@ -11,10 +11,23 @@ module Matching
       @order_book_manager.bid_order_book
     end
 
-    # Matching::Engine.new('btccny')
+    # Matching::Engine.new('ethbtc')
+    # options example:
+    # { 
+    #   id: ethbtc
+    #   code: 1
+    #   name: ETH/BTC
+    #   base_unit: eth
+    #   quote_unit: btc
+    #   price_group_fixed: 3
+    #   bid: {fee: 0.001, currency: btc, fixed: 8}
+    #   ask: {fee: 0.001, currency: eth, fixed: 8}
+    #   sort_order: 1
+    # }
     def initialize(market_id, options={})
       @market_id    = market_id
       @order_book_manager    = OrderBookManager.new(market_id)
+      @options = options
     end
 
     def submit(order)
@@ -22,8 +35,8 @@ module Matching
       match order, counter_book
       add_or_cancel order, book
     rescue
-      Rails.logger.fatal "Failed to submit order #{order.label}: #{$!}"
-      Rails.logger.fatal $!.backtrace.join("\n")
+      Matching.logger.fatal "Failed to submit order #{order.label}: #{$!}"
+      Matching.logger.fatal $!.backtrace.join("\n")
     end
 
     def cancel(order)
@@ -31,11 +44,11 @@ module Matching
       if removed_order = book.remove(order)
         publish_cancel removed_order, "cancelled by user"
       else
-        Rails.logger.warn "Cannot find order##{order.id} to cancel, skip."
+        Matching.logger.warn "Cannot find order##{order.id} to cancel, skip."
       end
     rescue
-      Rails.logger.fatal "Failed to cancel order #{order.label}: #{$!}"
-      Rails.logger.fatal $!.backtrace.join("\n")
+      Matching.logger.fatal "Failed to cancel order #{order.label}: #{$!}"
+      Matching.logger.fatal $!.backtrace.join("\n")
     end
 
     def limit_orders
@@ -52,6 +65,8 @@ module Matching
 
     def match(order, counter_book)
       return if order.filled?
+      return if tiny?(order)
+
       counter_order = counter_book.top
       return unless counter_order
 
@@ -79,14 +94,20 @@ module Matching
       volume = trade[1]
       funds  = trade[2]
 
-      Rails.logger.info "[#{@market_id}] new trade - ask: #{ask.label} bid: #{bid.label} price: #{price} volume: #{volume} funds: #{funds}"
+      Matching.logger.info "[#{@market_id}] new trade - ask: #{ask.label} bid: #{bid.label} price: #{price} volume: #{volume} funds: #{funds}"
       Matching.order_traded && Matching.order_traded.call({market: @market_id, ask_id: ask.id, bid_id: bid.id, strike_price: price, volume: volume, funds: funds})
     end
 
     def publish_cancel(order, reason)
-      Rails.logger.info "[#{@market_id}] cancel order ##{order.id} - reason: #{reason}"
+      Matching.logger.info "[#{@market_id}] cancel order ##{order.id} - reason: #{reason}"
       Matching.order_canceled && Matching.order_canceled.call({action: 'cancel', order: order.attributes})
     end
 
+    # 检查委托数量时候小于最小精度
+    def tiny?(order)
+      fixed = @options['ask']['fixed'] || DEFAULT_PRECISION
+      min_volume = '1'.to_d / (10 ** fixed)
+      order.volume < min_volume
+    end
   end
 end
